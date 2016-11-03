@@ -1,54 +1,92 @@
-var q = require('q'),
-    path = require('path'),
-    glob = require('glob'),
-    assign = require('object-assign'),
-    debug = require('debug')('protractor-cucumber-framework'),
-    Cucumber = require('cucumber'),
-    state = require('./lib/runState');
+var Promise = require('bluebird'),
+  path = require('path'),
+  glob = require('glob'),
+  debug = require('debug')('protractor-cucumber-framework'),
+  Cucumber = require('cucumber'),
+  state = require('./lib/runState');
 
 /**
  * Execute the Runner's test cases through Cucumber.
  *
  * @param {Runner} runner The current Protractor Runner.
  * @param {Array} specs Array of Directory Path Strings.
- * @return {q.Promise} Promise resolved with the test results
+ * @return {Promise} Promise resolved with the test results
  */
 exports.run = function(runner, specs) {
+
   var results = {};
+  var cucumberRunnerCmd = ['node', 'cucumberjs'];
+  var cucumberOpts = runner.getConfig().cucumberOpts;
+  var resultCapturerParam = ['--require', path.resolve(__dirname, 'lib', 'resultsCapturer.js')];
 
   return runner.runTestPreparer().then(function() {
-    var config = runner.getConfig();
-    var opts = assign({}, config.cucumberOpts, config.capabilities.cucumberOpts);
-    state.initialize(runner, results, opts.strict);
+    state.initialize(runner, results, cucumberOpts.strict);
 
-    return q.promise(function(resolve, reject) {
-      var cliArguments = convertOptionsToCliArguments(opts);
-      cliArguments.push('--require', path.resolve(__dirname, 'lib', 'resultsCapturer.js'));
-      cliArguments = cliArguments.concat(specs);
+    return new Promise(function(resolve, reject) {
+      var cliArguments = [].concat(cucumberRunnerCmd);
+      convertOptionsToCliArguments(cliArguments);
+      cliArguments = cliArguments.concat(resultCapturerParam).concat(specs);
 
       debug('cucumber command: "' + cliArguments.join(' ') + '"');
 
       Cucumber.Cli(cliArguments).run(function (isSuccessful) {
-        try {
-          var complete = q();
-          if (runner.getConfig().onComplete) {
-            complete = q(runner.getConfig().onComplete());
-          }
-          complete.then(function() {
-            resolve(results);
-          });
-        } catch (err) {
-          reject(err);
+        var rerun = browser.params.rerun;
+        if (!isSuccessful && rerun) {
+          var rerunArgs = getRerunArgs();
+          var maxRetryAttempts = rerun;
+          rerunArgs = rerunArgs.concat(resultCapturerParam);
+          return rerun(maxRetryAttempts, rerunArgs, resolve, reject);
+        } else {
+          return onCompleteResolveOrReject(resolve, reject)
         }
       });
     });
   });
 
-  function convertOptionsToCliArguments(options) {
-    var cliArguments = ['node', 'cucumberjs'];
+  function getRerunArgs() {
+    var rerunArgs = [];
+    var rerunFilePath = browser.params.rerunFilePath;
 
-    for (var option in options) {
-      var cliArgumentValues = convertOptionValueToCliValues(option, options[option]);
+    if (rerunFilePath === 'null') throw new Error(rerunFilePath, ' is not a valid Cucumber rerun file.');
+
+    convertOptionsToCliArguments(rerunArgs);
+    var args = cucumberRunnerCmd.concat(rerunFilePath).concat(rerunArgs);
+
+    return args;
+  }
+
+  function rerun(numRetryAttempts, rerunArgs, resolve, reject) {
+    if (numRetryAttempts > 0) {
+      debug('Re-running failing scenarios with command: ', rerunArgs.join(' '));
+      Cucumber.Cli(rerunArgs).run(function(isSuccessful) {
+        if (!isSuccessful) {
+        return rerun(numRetryAttempts - 1, rerunArgs, resolve, reject);
+      } else {
+        return onCompleteResolveOrReject(resolve, reject);
+      }
+    });
+    } else {
+      return onCompleteResolveOrReject(resolve, reject);
+    }
+  }
+
+  function onCompleteResolveOrReject(resolve, reject) {
+    var complete = Promise.resolve();
+
+    if (runner.getConfig().onComplete) {
+      complete = runner.getConfig().onComplete();
+    }
+
+    return complete.then(function() {
+      return resolve(results);
+    }).catch(function() {
+      return reject();
+    });
+  }
+
+  function convertOptionsToCliArguments(cliArguments) {
+    for (var option in cucumberOpts) {
+      var cliArgumentValues = convertOptionValueToCliValues(option, cucumberOpts[option]);
 
       if (Array.isArray(cliArgumentValues)) {
         cliArgumentValues.forEach(function (value) {
@@ -58,8 +96,6 @@ exports.run = function(runner, specs) {
         cliArguments.push('--' + option);
       }
     }
-
-    return cliArguments;
   }
 
   function convertRequireOptionValuesToCliValues(values) {
