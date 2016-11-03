@@ -30,12 +30,11 @@ exports.run = function(runner, specs) {
       debug('cucumber command: "' + cliArguments.join(' ') + '"');
 
       Cucumber.Cli(cliArguments).run(function (isSuccessful) {
-        var rerun = browser.params.rerun;
-        if (!isSuccessful && rerun) {
+        var numberRerunAttempts = browser.params.rerun;
+        if (!isSuccessful && numberRerunAttempts) {
           var rerunArgs = getRerunArgs();
-          var maxRetryAttempts = rerun;
           rerunArgs = rerunArgs.concat(resultCapturerParam);
-          return rerun(maxRetryAttempts, rerunArgs, resolve, reject);
+          return rerun(numberRerunAttempts, rerunArgs, resolve, reject);
         } else {
           return onCompleteResolveOrReject(resolve, reject)
         }
